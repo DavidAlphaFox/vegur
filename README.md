@@ -1,5 +1,7 @@
 # Vegur
 
+[![Build Status](https://travis-ci.org/heroku/vegur.svg?branch=master)](https://travis-ci.org/heroku/vegur)
+
 Heroku's proxy library based on a forked Cowboy frontend (Cowboyku). This
 library handles proxying in Heroku's routing stack
 
@@ -36,8 +38,8 @@ To set up a reverse-proxy that does load balancing locally, we'll first set up
 two toy servers:
 
 ```bash
-$ while true ; do  echo -e "HTTP/1.1 200 OK\r\nConnection:close\r\nContent-Length: ${#$(date)}\r\n\r\n$(date)" | nc -l -p 8081 ; done
-$ while true ; do  echo -e "HTTP/1.1 200 OK\r\nConnection:close\r\nContent-Length: ${#$(date)}\r\n\r\n$(date)" | nc -l -p 8082 ; done
+$ while true; do ( BODY=$(date); echo -e "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: ${#BODY}\r\n\r\n$BODY" | nc -l -p 8081 ); done
+$ while true; do ( BODY=$(date); echo -e "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: ${#BODY}\r\n\r\n$BODY" | nc -l -p 8082 ); done
 ```
 
 These have the same behaviour and will do the exact same thing, except one is
@@ -77,8 +79,7 @@ Now for the implementation of specific callbacks, documented in
 `src/vegur_stub.erl`:
 
 ```erlang
-init(AcceptTime, Upstream) ->
-    random:seed(AcceptTime), % RNGs require per-process seeding
+init(_AcceptTime, Upstream) ->
     {ok, Upstream, #state{}}. % state initialization here.
 
 lookup_domain_name(_ReqDomain, Upstream, State) ->
@@ -99,13 +100,18 @@ checkout_service(Servers, Upstream, State=#state{tries=Tried}) ->
         [] ->
             {error, all_blocked, Upstream, State};
         _ ->
-            N = random:uniform(length(Available)),
+            N = rand:uniform(length(Available)),
             Pick = lists:nth(N, Available),
             {service, Pick, Upstream, State#state{tries=[Pick | Tried]}}
     end.
 
 service_backend({_Id, IP, Port}, Upstream, State) ->
-    %% extract the IP:PORT from the chosen server.
+    %% Extract the IP:PORT from the chosen server.
+    %% To enable keep-alive, use:
+    %% `{{keepalive, {default, {IP,Port}}}, Upstream, State}'
+    %% To force the use of a new keepalive connection, use:
+    %% `{{keepalive, {new, {IP,Port}}}, Upstream, State}'
+    %% Otherwise, no keepalive is done to the back-end:
     {{IP, Port}, Upstream, State}.
 
 checkin_service(_Servers, _Pick, _Phase, _ServState, Upstream, State) ->
@@ -419,8 +425,10 @@ Other details:
   it after it receives the final response. Note however, that because
   `Connection: close` is a hop-by-hop mechanism, the proxy will not necessarily
   close the connection to the client, and may not forward it.
-- The proxy will close all connections to the back-ends after each request, but
-  will honor keep-alive to the client when possible.
+- By default, the proxy will close all connections to the back-ends after each
+  request, but will honor keep-alive to the client when possible. Support
+  for keep-alive to the back-end can be enabled by returning the right values
+  out of the `service_backend` callback.
 - The proxy will return a configurable error code if the server returns a `100
   Continue` following an initial `100 Continue` response. The proxy does not
   yet support infinite `1xx` streams.
@@ -540,6 +548,12 @@ The proxy is then split into 5 major parts maintained in this directory:
 
 ## Changelog
 
+- 2.0.5: `Expect` header can be empty
+- 2.0.4: vegur_client returns error on invalid encoding types
+- 2.0.3: reinstate `X-Forwarded-Host` as too much stuff breaks without it
+- 2.0.2: drop duplicate `Host` headers and `X-Forwarded-Host` for cache issues
+- 2.0.1: enable `SO_REUSEADDR` on connections to backend to support more connections
+- 2.0.0: adding support for keepalive to the backend, dropping support for OTP 16 and 17
 - 1.1.1: minor refactoring, typespecs and documentation changes
 - 1.1.0: initial support for PROXY protocol v2
 - 1.0.0: first stable release
